@@ -13,7 +13,7 @@ from setuptools import setup, find_packages
 # To use a consistent encoding
 from codecs import open
 
-from hashid_field import __version__
+__version__ = "2.1.1"
 
 here = os.path.abspath(os.path.dirname(__file__))
 
