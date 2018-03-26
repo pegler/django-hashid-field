@@ -1,16 +1,17 @@
 import warnings
 
 from django import forms
-from django.core import exceptions, checks
-from django.db import models
-from django.utils.translation import ugettext_lazy as _
 from django.contrib.admin import widgets as admin_widgets
+from django.core import checks, exceptions
+from django.db import models
+from django.utils.functional import SimpleLazyObject
+from django.utils.translation import ugettext_lazy as _
 from hashids import Hashids
 
-from .lookups import HashidLookup, HashidIterableLookup
+from .conf import settings
 from .descriptor import HashidDescriptor
 from .hashid import Hashid
-from .conf import settings
+from .lookups import HashidIterableLookup, HashidLookup
 
 
 class HashidFieldMixin(object):
@@ -22,11 +23,12 @@ class HashidFieldMixin(object):
     iterable_lookups = ('in',)
     passthrough_lookups = ('isnull',)
 
-    def __init__(self, salt=settings.HASHID_FIELD_SALT, min_length=7, alphabet=Hashids.ALPHABET,
-                 allow_int_lookup=settings.HASHID_FIELD_ALLOW_INT_LOOKUP, *args, **kwargs):
+    def __init__(self, salt=settings.HASHID_FIELD_SALT, min_length=settings.HASHID_FIELD_MIN_LENGTH, alphabet=Hashids.ALPHABET,
+                 allow_int_lookup=settings.HASHID_FIELD_ALLOW_INT_LOOKUP, prefix=None, *args, **kwargs):
         self.salt = salt
         self.min_length = min_length
         self.alphabet = alphabet
+        self.prefix = prefix
         if 'allow_int' in kwargs:
             warnings.warn("The 'allow_int' parameter was renamed to 'allow_int_lookup'.", DeprecationWarning, stacklevel=2)
             allow_int_lookup = kwargs['allow_int']
@@ -38,6 +40,7 @@ class HashidFieldMixin(object):
         name, path, args, kwargs = super(HashidFieldMixin, self).deconstruct()
         kwargs['min_length'] = self.min_length
         kwargs['alphabet'] = self.alphabet
+        kwargs['prefix'] = self.prefix
         return name, path, args, kwargs
 
     def check(self, **kwargs):
@@ -71,12 +74,10 @@ class HashidFieldMixin(object):
         return []
 
     def encode_id(self, id):
-        return Hashid(id, salt=self.salt, min_length=self.min_length, alphabet=self.alphabet)
+        return Hashid(id, salt=self.salt, min_length=self.min_length, alphabet=self.alphabet, prefix=self.prefix)
 
     def from_db_value(self, value, expression, connection, context):
-        if value is None:
-            return value
-        return self.encode_id(value)
+        return value
 
     def get_lookup(self, lookup_name):
         if lookup_name in self.exact_lookups:
@@ -113,11 +114,6 @@ class HashidFieldMixin(object):
             raise ValueError(self.error_messages['invalid'] % {'value': value})
         return hashid.id
 
-    def contribute_to_class(self, cls, name, **kwargs):
-        super(HashidFieldMixin, self).contribute_to_class(cls, name, **kwargs)
-        # setattr(cls, "_" + self.attname, getattr(cls, self.attname))
-        setattr(cls, self.attname, HashidDescriptor(self.attname, salt=self.salt, min_length=self.min_length, alphabet=self.alphabet))
-
 
 class HashidField(HashidFieldMixin, models.IntegerField):
     description = "A Hashids obscured IntegerField"
@@ -129,9 +125,28 @@ class HashidField(HashidFieldMixin, models.IntegerField):
             defaults['widget'] = admin_widgets.AdminTextInputWidget
         return super(HashidField, self).formfield(**defaults)
 
+    def contribute_to_class(self, cls, name, **kwargs):
+        super(HashidField, self).contribute_to_class(cls, name, **kwargs)
+        setattr(cls, self.attname, HashidDescriptor(self.attname, salt=self.salt, min_length=self.min_length, alphabet=self.alphabet, prefix=self.prefix))
+
 
 class HashidAutoField(HashidFieldMixin, models.AutoField):
     description = "A Hashids obscured AutoField"
+
+    def contribute_to_class(self, cls, name, **kwargs):
+        super(HashidField, self).contribute_to_class(cls, name, **kwargs)
+        setattr(cls, self.attname, HashidDescriptor(self.attname, salt=self.salt, min_length=self.min_length, alphabet=self.alphabet, prefix=self.prefix))
+
+
+class PrimaryKeyHashidProxyField(HashidFieldMixin, models.IntegerField):
+
+    def contribute_to_class(self, cls, name, **kwargs):
+        kwargs['virtual_only'] = True
+        super(PrimaryKeyHashidProxyField, self).contribute_to_class(cls, name, **kwargs)
+        setattr(cls, self.attname, HashidDescriptor(self.attname, salt=self.salt, min_length=self.min_length, alphabet=self.alphabet, prefix=self.prefix))
+
+        self.column = SimpleLazyObject(lambda: self.model._meta.pk.column)
+
 
 
 # Monkey patch Django REST Framework, if it's installed, to throw exceptions if fields aren't explicitly defined in
